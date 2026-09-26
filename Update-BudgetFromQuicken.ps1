@@ -105,6 +105,7 @@ $vendorMap = @{
     'state farm'           = 'State Farm'
     'state farm insurance' = 'State Farm'
 }
+$protectedSpreadsheetNames = @('Savings')
 
 $data = Get-QuickenReportData -Path $QuickenPath
 
@@ -181,11 +182,19 @@ $mappedEntries = foreach ($entry in $data.Entries | Where-Object {
     $scope = $null
 }
 $candidates = foreach ($group in ($mappedEntries | Group-Object -Property Name)) {
+    $amount = ($group.Group | Measure-Object -Property Amount -Sum).Sum
+    $formula = if ($group.Count -gt 1) {
+        $terms = @($group.Group | ForEach-Object {
+                '(' + $_.Amount.ToString('0.################', [Globalization.CultureInfo]::InvariantCulture) + ')'
+            })
+        '=' + ($terms -join '+')
+    }
     [PSCustomObject]@{
-        Name   = $group.Name
-        Source = ($group.Group.Source -join ' + ')
-        Amount = ($group.Group | Measure-Object -Property Amount -Sum).Sum
-        Scope  = ($group.Group.Scope | Where-Object { $_ } | Select-Object -First 1)
+        Name    = $group.Name
+        Source  = ($group.Group.Source -join ' + ')
+        Amount  = $amount
+        Formula = $formula
+        Scope   = ($group.Group.Scope | Where-Object { $_ } | Select-Object -First 1)
     }
 }
 
@@ -279,6 +288,11 @@ try {
 
     $updated = 0
     foreach ($candidate in $candidates) {
+        if ($protectedSpreadsheetNames -contains $candidate.Name) {
+            Write-Host "Skipping protected spreadsheet category '$($candidate.Name)' from '$($candidate.Source)'." -ForegroundColor DarkGray
+            continue
+        }
+
         $matches = $rowsByName[$candidate.Name.Trim().ToLowerInvariant()]
 
         if (-not $matches -and $candidate.Scope -eq 'Medical' -and $medicalBlankRows.Count -gt 0) {
@@ -330,11 +344,16 @@ try {
 
         $targetRow = $writableRows[0]
         $oldValue = $valueArr[$targetRow, 1]
+        $newValue = if ($candidate.Formula) { $candidate.Formula } else { $candidate.Amount }
 
-        Write-Host ("{0,-24} <- {1,-28} row {2,-4} C: {3,10} -> {4,10}" -f $candidate.Name, $candidate.Source, $targetRow, $oldValue, $candidate.Amount) -ForegroundColor Green
+        Write-Host ("{0,-24} <- {1,-28} row {2,-4} C: {3,10} -> {4,10}" -f $candidate.Name, $candidate.Source, $targetRow, $oldValue, $newValue) -ForegroundColor Green
 
         if (-not $DryRun) {
-            $sheet.Cells.Item($targetRow, 3).Value2 = $candidate.Amount
+            if ($candidate.Formula) {
+                $sheet.Cells.Item($targetRow, 3).Formula = $candidate.Formula
+            } else {
+                $sheet.Cells.Item($targetRow, 3).Value2 = $candidate.Amount
+            }
         }
         $updated++
     }
