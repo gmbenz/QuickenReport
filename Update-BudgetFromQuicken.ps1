@@ -35,6 +35,25 @@ param(
     [switch]$DryRun
 )
 
+$logDirectory = Join-Path $PSScriptRoot 'logs'
+New-Item -Path $logDirectory -ItemType Directory -Force | Out-Null
+$logPath = Join-Path $logDirectory ((Get-Date).ToString('yyyyMMddHHmmss') + '.log')
+$transcriptStarted = $false
+Start-Transcript -Path $logPath -Append | Out-Null
+$transcriptStarted = $true
+
+function Stop-RunTranscript {
+    if ($script:transcriptStarted) {
+        Stop-Transcript | Out-Null
+        $script:transcriptStarted = $false
+    }
+}
+
+trap {
+    Stop-RunTranscript
+    break
+}
+
 . (Join-Path $PSScriptRoot 'Parse-QuickenReport.ps1')
 
 # Quicken category name -> spreadsheet category name.
@@ -92,6 +111,7 @@ $data = Get-QuickenReportData -Path $QuickenPath
 $dateRangePattern = '^\s*(\d{1,2}/\d{1,2}/\d{4})\s+through\s+(\d{1,2}/\d{1,2}/\d{4})\s*$'
 if ($data.DateRange -notmatch $dateRangePattern) {
     Write-Warning "Could not determine a single report month from the Quicken date range '$($data.DateRange)'. No spreadsheet updates were made."
+    Stop-RunTranscript
     return
 }
 
@@ -100,11 +120,13 @@ try {
     $endDate = [DateTime]::Parse($Matches[2], [Globalization.CultureInfo]::InvariantCulture)
 } catch {
     Write-Warning "Could not parse the Quicken date range '$($data.DateRange)'. No spreadsheet updates were made."
+    Stop-RunTranscript
     return
 }
 
 if ($startDate.Year -ne $endDate.Year -or $startDate.Month -ne $endDate.Month) {
     Write-Warning "The Quicken report spans more than one month ('$($data.DateRange)'). No spreadsheet updates were made."
+    Stop-RunTranscript
     return
 }
 
@@ -169,6 +191,7 @@ $candidates = foreach ($group in ($mappedEntries | Group-Object -Property Name))
 
 if (-not $candidates) {
     Write-Warning "No category/group entries found in the Quicken report."
+    Stop-RunTranscript
     return
 }
 
@@ -334,3 +357,5 @@ finally {
         [void][System.Runtime.InteropServices.Marshal]::ReleaseComObject($excel)
     }
 }
+
+Stop-RunTranscript
