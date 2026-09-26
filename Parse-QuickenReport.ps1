@@ -48,7 +48,13 @@ function Get-QuickenReportData {
     $negatedGroups = 'EXPENSES', 'TRANSFERS'
     $reportGroups = 'INCOME', 'EXPENSES', 'TRANSFERS'
 
-    # Pre-scan the leading lines (before the "Date/Account/Description/Amount" header) for the title / date range
+    $dateIndex = $null
+    $accountIndex = $null
+    $descriptionIndex = $null
+    $memoIndex = $null
+    $amountIndex = $null
+
+    # Pre-scan the leading lines (before the transaction header) for the title / date range
     foreach ($line in $lines) {
         if ($line -match "`t") { break }
         if ([string]::IsNullOrWhiteSpace($line)) { continue }
@@ -61,21 +67,28 @@ function Get-QuickenReportData {
 
         $cols = $line -split "`t"
 
-        # Skip the title/date-range lines and the column header row itself
+        # Skip the title/date-range lines and capture the column indexes from the header row.
         if (-not $sawHeaderRow) {
             if ($cols.Count -le 1) { continue }
-            if ($cols[1] -eq 'Date') {
+            $headerNames = @($cols | ForEach-Object { $_.Trim() })
+            if ($headerNames -contains 'Date' -and $headerNames -contains 'Amount') {
+                $dateIndex = [Array]::IndexOf($headerNames, 'Date')
+                $accountIndex = [Array]::IndexOf($headerNames, 'Account')
+                $descriptionIndex = [Array]::IndexOf($headerNames, 'Description')
+                $memoIndex = [Array]::IndexOf($headerNames, 'Memo')
+                $amountIndex = [Array]::IndexOf($headerNames, 'Amount')
                 $sawHeaderRow = $true
             }
             continue
         }
 
-        if ($cols.Count -lt 5) { continue }
+        if ($cols.Count -le $amountIndex) { continue }
 
-        $col1 = $cols[1].Trim()
-        $col2 = $cols[2].Trim()
-        $col3 = $cols[3].Trim()
-        $amountText = $cols[4].Trim()
+        $col1 = $cols[$dateIndex].Trim()
+        $col2 = $cols[$accountIndex].Trim()
+        $col3 = $cols[$descriptionIndex].Trim()
+        $memo = if ($memoIndex -ge 0 -and $cols.Count -gt $memoIndex) { $cols[$memoIndex].Trim() } else { $null }
+        $amountText = $cols[$amountIndex].Trim()
         if ([string]::IsNullOrWhiteSpace($col1) -or [string]::IsNullOrWhiteSpace($amountText)) { continue }
 
         $amount = [double]::Parse(($amountText -replace ',', ''), [System.Globalization.CultureInfo]::InvariantCulture)
@@ -92,6 +105,7 @@ function Get-QuickenReportData {
                 Date        = $col1
                 Account     = $col2
                 Description = $col3
+                Memo        = $memo
                 Amount      = $amount
             })
         }

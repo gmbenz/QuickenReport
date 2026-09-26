@@ -22,7 +22,7 @@
     Path to the budget workbook. Defaults to the standard xBudget 2026.xlsm location.
 
 .PARAMETER SheetName
-    Sheet (month) to update. Defaults to the current month name.
+    Optional sheet name override. By default, the month is determined from the Quicken report date range.
 
 .PARAMETER DryRun
     Report what would change without writing or saving anything.
@@ -31,7 +31,7 @@
 param(
     [string]$QuickenPath,
     [string]$WorkbookPath = 'C:\Users\Glenn\My Drive\Finances\Budget\Budget 2026.xlsm',
-    [string]$SheetName = (Get-Date).ToString('MMMM'),
+    [string]$SheetName,
     [switch]$DryRun
 )
 
@@ -88,6 +88,28 @@ $vendorMap = @{
 }
 
 $data = Get-QuickenReportData -Path $QuickenPath
+
+$dateRangePattern = '^\s*(\d{1,2}/\d{1,2}/\d{4})\s+through\s+(\d{1,2}/\d{1,2}/\d{4})\s*$'
+if ($data.DateRange -notmatch $dateRangePattern) {
+    Write-Warning "Could not determine a single report month from the Quicken date range '$($data.DateRange)'. No spreadsheet updates were made."
+    return
+}
+
+try {
+    $startDate = [DateTime]::Parse($Matches[1], [Globalization.CultureInfo]::InvariantCulture)
+    $endDate = [DateTime]::Parse($Matches[2], [Globalization.CultureInfo]::InvariantCulture)
+} catch {
+    Write-Warning "Could not parse the Quicken date range '$($data.DateRange)'. No spreadsheet updates were made."
+    return
+}
+
+if ($startDate.Year -ne $endDate.Year -or $startDate.Month -ne $endDate.Month) {
+    Write-Warning "The Quicken report spans more than one month ('$($data.DateRange)'). No spreadsheet updates were made."
+    return
+}
+
+$SheetName = $startDate.ToString('MMMM')
+
 $currentSection = $null
 $mappedEntries = foreach ($entry in $data.Entries | Where-Object {
         $_.Type -in 'Group', 'Category' -or
@@ -163,18 +185,31 @@ try {
     }
 
     if ($excel) {
-        $workbook = $excel.Workbooks | Where-Object { $_.FullName -eq $WorkbookPath }
+        try {
+            $workbooks = $excel.Workbooks
+            $workbook = $workbooks | Where-Object { $_.FullName -eq $WorkbookPath }
+            if ($null -eq $workbooks) { $excel = $null }
+        } catch {
+            $excel = $null
+            $workbooks = $null
+        }
     }
 
     if (-not $excel) {
-        $excel = New-Object -ComObject Excel.Application
+        try {
+            $excel = New-Object -ComObject Excel.Application -ErrorAction Stop
+            $workbooks = $excel.Workbooks
+        } catch {
+            throw "Could not start Microsoft Excel: $($_.Exception.Message)"
+        }
         $excel.Visible = $true
         $startedExcel = $true
     }
 
     if (-not $workbook) {
         if (-not (Test-Path $WorkbookPath)) { throw "Workbook not found: $WorkbookPath" }
-        $workbook = $excel.Workbooks.Open($WorkbookPath)
+        if ($null -eq $workbooks) { throw "Microsoft Excel is unavailable or its workbooks collection could not be opened." }
+        $workbook = $workbooks.Open($WorkbookPath)
         $openedWorkbook = $true
     }
 
