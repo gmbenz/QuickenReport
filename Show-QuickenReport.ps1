@@ -49,13 +49,16 @@ function Write-Colored([string]$Text, [string]$Color) {
     if ($NoColor) { Write-Host $Text } else { Write-Host $Text -ForegroundColor $Color }
 }
 
+# Load the shared parser so this script only owns presentation and color choices.
 . (Join-Path $PSScriptRoot 'Parse-QuickenReport.ps1')
 
 $amountWidth = 12
 $nameWidth = 24
 
+# Parse either the supplied file or the current clipboard contents.
 $data = Get-QuickenReportData -Path $Path -ShowVoids:$ShowVoids
 
+# Render metadata first, then walk the entries in their original report order.
 Write-Host ""
 if ($data.Title) { Write-Colored $data.Title 'White' }
 if ($data.DateRange) { Write-Colored $data.DateRange 'Gray' }
@@ -63,16 +66,19 @@ if ($data.DateRange) { Write-Colored $data.DateRange 'Gray' }
 foreach ($entry in $data.Entries) {
     switch ($entry.Type) {
         'Transaction' {
+            # Indent transactions beneath their category and color by amount direction.
             $line1 = "    {0,-10} {1,-20} {2,-24} {3,$amountWidth}" -f $entry.Date, $entry.Account, $entry.Description, (Format-Amount $entry.Amount)
             $color = if ($entry.Amount -lt 0) { 'Red' } else { 'DarkGreen' }
             Write-Colored $line1 $color
         }
         'Group' {
+            # Groups receive a blank separator so major report sections are easy to scan.
             $line1 = "{0,-$nameWidth} {1,$amountWidth}" -f $entry.Name, (Format-Amount $entry.Amount)
             Write-Host ""
             Write-Colored $line1 'Cyan'
         }
         'Category' {
+            # Category subtotals use a smaller indent than their transactions.
             $line1 = "  {0,-$($nameWidth - 2)} {1,$amountWidth}" -f $entry.Name, (Format-Amount $entry.Amount)
             $color = if ($entry.Amount -lt 0) { 'Yellow' } else { 'Green' }
             Write-Colored $line1 $color
@@ -81,6 +87,7 @@ foreach ($entry in $data.Entries) {
 }
 
 Write-Host ""
+# Show the report-wide total after all group, category, and transaction rows.
 if ($null -ne $data.OverallTotal) {
     $color = if ($data.OverallTotal -lt 0) { 'Red' } else { 'Green' }
     Write-Colored ("{0,-$nameWidth} {1,$amountWidth}" -f 'OVERALL TOTAL', (Format-Amount $data.OverallTotal)) $color

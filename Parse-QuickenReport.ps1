@@ -23,6 +23,7 @@ function Get-QuickenReportData {
         [switch]$ShowVoids
     )
 
+    # Use a file for repeatable runs/tests; otherwise consume the report copied from Quicken.
     if ($Path) {
         if (-not (Test-Path $Path)) { throw "File not found: $Path" }
         $raw = Get-Content -Path $Path -Raw
@@ -54,7 +55,8 @@ function Get-QuickenReportData {
     $memoIndex = $null
     $amountIndex = $null
 
-    # Pre-scan the leading lines (before the transaction header) for the title / date range
+    # Capture the report metadata before locating the tab-delimited header row.
+    # Parse the rows after the header, preserving Quicken's group/category/transaction order.
     foreach ($line in $lines) {
         if ($line -match "`t") { break }
         if ([string]::IsNullOrWhiteSpace($line)) { continue }
@@ -94,7 +96,7 @@ function Get-QuickenReportData {
         $amount = [double]::Parse(($amountText -replace ',', ''), [System.Globalization.CultureInfo]::InvariantCulture)
 
         if ($col1 -match $dateRegex) {
-            # Transaction row
+            # Transaction rows inherit the current group and category context.
             if (-not $ShowVoids -and $col3 -eq '**VOID**' -and $amount -eq 0) { continue }
 
             if ($currentGroup -in $negatedGroups) { $amount = -$amount }
@@ -113,7 +115,7 @@ function Get-QuickenReportData {
             $overallTotal = $amount
         }
         else {
-            # Group / category subtotal row
+            # Group/category rows establish context and provide subtotal entries.
             $isGroup = ($col1 -ceq $col1.ToUpperInvariant())
             if ($isGroup -and $col1 -in $reportGroups) { $currentGroup = $col1 }
             $currentCategory = $col1
@@ -128,6 +130,7 @@ function Get-QuickenReportData {
         }
     }
 
+    # Return one object so display and spreadsheet scripts share the same parser behavior.
     [PSCustomObject]@{
         Title        = $title
         DateRange    = $dateRange

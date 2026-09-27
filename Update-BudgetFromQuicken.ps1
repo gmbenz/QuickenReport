@@ -39,6 +39,7 @@ param(
     [switch]$DebugMode
 )
 
+# Keep a transcript because the shortcut may launch this script without a visible console.
 $logDirectory = Join-Path $PSScriptRoot 'logs'
 New-Item -Path $logDirectory -ItemType Directory -Force | Out-Null
 $logPath = Join-Path $logDirectory ((Get-Date).ToString('yyyyMMddHHmmss') + '.log')
@@ -65,6 +66,7 @@ trap {
     break
 }
 
+# Define the small set of Windows APIs needed to find, activate, and send keys to windows.
 if (-not ('QuickenReport.NativeMethods' -as [type])) {
     Add-Type @'
 using System;
@@ -158,6 +160,7 @@ function Find-VisibleWindow {
         [string]$ExactTitle
     )
 
+    # Enumerate top-level windows instead of relying on process MainWindowTitle, which can be blank.
     $matchingWindows = [System.Collections.Generic.List[object]]::new()
     $callback = [QuickenReport.NativeMethods+EnumWindowsProc] {
         param($hWnd, $lParam)
@@ -180,6 +183,7 @@ function Find-VisibleWindow {
 }
 
 function Copy-MonthlyExpensesReport {
+    # The report window is separate from Quicken's main window, so locate it after the shortcut runs.
     $window = Find-VisibleWindow -TitlePattern '*Monthly Expenses*' -ExactTitle 'Monthly Expenses'
     if (-not $window) {
         throw "Could not find a visible window with 'Monthly Expenses' in its title."
@@ -195,6 +199,7 @@ function Copy-MonthlyExpensesReport {
 }
 
 function Open-AndCopy-MonthlyExpensesReport {
+    # Open the report from the real Quicken window, then copy its grid to the clipboard.
     $quickenWindow = Find-VisibleWindow -TitlePattern '*Quicken Classic Deluxe*' -ExactTitle 'Quicken Classic Deluxe'
     if (-not $quickenWindow) {
         throw "Could not find a visible Quicken window."
@@ -221,9 +226,11 @@ function Open-AndCopy-MonthlyExpensesReport {
 }
 
 if (-not $QuickenPath) {
+    # File-based runs are deterministic and do not need to drive the Quicken UI.
     Open-AndCopy-MonthlyExpensesReport
 }
 
+# Load the shared parser after clipboard acquisition so the UI automation remains isolated here.
 . (Join-Path $PSScriptRoot 'Parse-QuickenReport.ps1')
 
 # Quicken category name -> spreadsheet category name.
@@ -280,6 +287,7 @@ $vendorMap = @{
 }
 $protectedSpreadsheetNames = @('Savings')
 
+# Acquire structured report data from the copied report or the optional input file.
 $data = Get-QuickenReportData -Path $QuickenPath
 
 $dateRangePattern = '^\s*(\d{1,2}/\d{1,2}/\d{4})\s+through\s+(\d{1,2}/\d{1,2}/\d{4})\s*$'
@@ -307,8 +315,10 @@ if ($startDate.Year -ne $endDate.Year -or $startDate.Month -ne $endDate.Month) {
     return
 }
 
+# The report month determines the target worksheet unless an explicit override is supplied.
 $SheetName = $startDate.ToString('MMMM')
 
+# Map Quicken groups/categories/vendors to the names used by the budget workbook.
 $currentSection = $null
 $mappedEntries = foreach ($entry in $data.Entries | Where-Object {
         $_.Type -in 'Group', 'Category' -or
@@ -357,6 +367,7 @@ $mappedEntries = foreach ($entry in $data.Entries | Where-Object {
     $spreadsheetName = $null
     $scope = $null
 }
+# Combine duplicate mapped entries into one spreadsheet candidate, preserving a formula when useful.
 $candidates = foreach ($group in ($mappedEntries | Group-Object -Property Name)) {
     $amount = ($group.Group | Measure-Object -Property Amount -Sum).Sum
     $formula = if ($group.Count -gt 1) {
@@ -381,6 +392,7 @@ if (-not $candidates) {
     return
 }
 
+# Connect to an existing workbook when possible; otherwise open the configured workbook through COM.
 $excel = $null
 $workbook = $null
 $startedExcel = $false
@@ -425,6 +437,7 @@ try {
     $sheet = $workbook.Sheets | Where-Object { $_.Name -eq $SheetName }
     if (-not $sheet) { throw "Sheet '$SheetName' not found in $WorkbookPath" }
 
+    # Read the relevant columns in bulk to avoid a COM round-trip for every spreadsheet cell.
     $usedRange = $sheet.UsedRange
     $lastRow = $usedRange.Row + $usedRange.Rows.Count - 1
 
@@ -434,6 +447,7 @@ try {
     $valueArr = $sheet.Range($sheet.Cells.Item(1, 3), $sheet.Cells.Item($lastRow, 3)).Value2
     $flagsArr = $sheet.Range($sheet.Cells.Item(1, 8), $sheet.Cells.Item($lastRow, 8)).Value2
 
+    # Index eligible worksheet rows, including reserved blank slots for special child categories.
     $rowsByName = @{}
     $medicalBlankRows = [System.Collections.Generic.List[int]]::new()
     $incomeMiscBlankRows = [System.Collections.Generic.List[int]]::new()
@@ -463,6 +477,7 @@ try {
         }
     }
 
+    # Resolve each Quicken candidate to exactly one writable budget row before changing Excel.
     $updated = 0
     foreach ($candidate in $candidates) {
         if ($protectedSpreadsheetNames -contains $candidate.Name) {
@@ -501,6 +516,7 @@ try {
             continue
         }
 
+        # SUM-family formulas remain authoritative; additive formulas can be replaced by Quicken values.
         $writableRows = $matches | Where-Object {
             $f = $formulaArr[$_, 1]
             $value = $valueArr[$_, 1]
@@ -525,6 +541,7 @@ try {
 
         Write-Host ("{0,-24} <- {1,-28} row {2,-4} C: {3,10} -> {4,10}" -f $candidate.Name, $candidate.Source, $targetRow, $oldValue, $newValue) -ForegroundColor Green
 
+        # DryRun reports the same decisions without changing or saving the workbook.
         if (-not $DryRun) {
             if ($candidate.Formula) {
                 $sheet.Cells.Item($targetRow, 3).Formula = $candidate.Formula
@@ -543,6 +560,7 @@ try {
     }
 }
 finally {
+    # Release COM ownership and close Excel only when this script started it.
     if ($excel) {
         if ($openedWorkbook -and $workbook -and -not $DryRun) {
             # workbook was opened by this script and already saved above; leave it open for review
