@@ -7,10 +7,10 @@
     Reads a Quicken report (clipboard or -QuickenPath file) via Get-QuickenReportData
     (Parse-QuickenReport.ps1), then for each Group/Category subtotal name in that data
     looks for a matching name in column A of the target month's sheet. When exactly one
-    matching row has a plain (non-formula) numeric value in column C, that cell is
-    overwritten with the Quicken amount. Rows whose column C is a formula are left alone,
-    and ambiguous (multiple candidate rows) or unmatched names are reported so they can be
-    handled manually.
+    matching row has a numeric value in column C, that cell is overwritten with the Quicken
+    amount unless its formula uses a SUM function (including SUMIF and SUMIFS). SUM formulas
+    are left alone, while formulas that add individual items can be updated. Ambiguous
+    (multiple candidate rows) or unmatched names are reported so they can be handled manually.
 
     Connects to Excel via COM. If the workbook is already open, it is updated in place;
     otherwise it is opened (and, if this script started Excel itself, closed again when done).
@@ -79,6 +79,9 @@ $categoryMap = @{
     'hsabank'                = 'HSA/Reimburse'
     'savings'                = 'Savings'
     "kohl's"                = 'Debt Misc'
+    "american express"         = 'Debt Misc'
+    "discover"                = 'Debt Misc'
+    "united airlines"          = 'Debt Misc'
     'carecredit'             = 'Debt CareCredit'
     "jessica's student loan" = 'Student Loan'
     'rocket mortgage escrow' = 'Home Mortgage'
@@ -327,7 +330,7 @@ try {
         $writableRows = $matches | Where-Object {
             $f = $formulaArr[$_, 1]
             $value = $valueArr[$_, 1]
-            -not ($f -is [string] -and $f.StartsWith('=')) -and
+            -not ($f -is [string] -and $f -match '(?i)(^|[^A-Z0-9_])SUM[A-Z0-9_]*\s*\(') -and
                 $value -is [ValueType] -and
                 $value -isnot [bool]
         }
