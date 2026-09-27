@@ -26,13 +26,17 @@
 
 .PARAMETER DryRun
     Report what would change without writing or saving anything.
+
+.PARAMETER DebugMode
+    Keep the PowerShell console open after the script finishes or encounters an error.
 #>
 [CmdletBinding()]
 param(
     [string]$QuickenPath,
     [string]$WorkbookPath = 'C:\Users\Glenn\My Drive\Finances\Budget\Budget 2026.xlsm',
     [string]$SheetName,
-    [switch]$DryRun
+    [switch]$DryRun,
+    [switch]$DebugMode
 )
 
 $logDirectory = Join-Path $PSScriptRoot 'logs'
@@ -49,9 +53,175 @@ function Stop-RunTranscript {
     }
 }
 
+function Wait-DebugConsole {
+    if ($DebugMode) {
+        Read-Host 'Debug mode: press Enter to close this console'
+    }
+}
+
 trap {
     Stop-RunTranscript
+    Wait-DebugConsole
     break
+}
+
+if (-not ('QuickenReport.NativeMethods' -as [type])) {
+    Add-Type @'
+using System;
+using System.Text;
+using System.Runtime.InteropServices;
+
+namespace QuickenReport {
+    public static class NativeMethods {
+        public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
+
+        [DllImport("user32.dll")]
+        public static extern bool EnumWindows(EnumWindowsProc callback, IntPtr lParam);
+
+        [DllImport("user32.dll")]
+        public static extern bool IsWindowVisible(IntPtr hWnd);
+
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+        public static extern int GetWindowText(IntPtr hWnd, StringBuilder text, int maxCount);
+
+        [DllImport("user32.dll")]
+        public static extern bool SetForegroundWindow(IntPtr hWnd);
+
+        [DllImport("user32.dll")]
+        private static extern uint SendInput(uint inputCount, INPUT[] inputs, int inputSize);
+
+        [DllImport("user32.dll")]
+        private static extern uint MapVirtualKey(uint code, uint mapType);
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct INPUT {
+            public uint type;
+            public INPUTUNION union;
+        }
+
+        [StructLayout(LayoutKind.Explicit)]
+        private struct INPUTUNION {
+            [FieldOffset(0)] public KEYBDINPUT keyboard;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct KEYBDINPUT {
+            public ushort virtualKey;
+            public ushort scanCode;
+            public uint flags;
+            public uint time;
+            public UIntPtr extraInfo;
+        }
+
+        public static void SendAltShiftE() {
+            const uint scanCode = 0x0008;
+            const uint keyUp = 0x0002;
+            ushort altScanCode = (ushort)MapVirtualKey(0x12, 0);
+            ushort shiftScanCode = (ushort)MapVirtualKey(0x10, 0);
+            ushort eScanCode = (ushort)MapVirtualKey(0x45, 0);
+            INPUT[] inputs = new INPUT[] {
+                Key(0x12, altScanCode, scanCode),
+                Key(0x10, shiftScanCode, scanCode),
+                Key(0x45, eScanCode, scanCode),
+                Key(0x45, eScanCode, scanCode | keyUp),
+                Key(0x10, shiftScanCode, scanCode | keyUp),
+                Key(0x12, altScanCode, scanCode | keyUp)
+            };
+            for (int index = 0; index < inputs.Length; index++) {
+                SendInput(1, new INPUT[] { inputs[index] }, Marshal.SizeOf(typeof(INPUT)));
+                System.Threading.Thread.Sleep(index == 2 ? 150 : 50);
+            }
+        }
+
+        private static INPUT Key(ushort virtualKey, ushort scanCode, uint flags) {
+            return new INPUT {
+                type = 1,
+                union = new INPUTUNION {
+                    keyboard = new KEYBDINPUT {
+                        virtualKey = virtualKey,
+                        scanCode = scanCode,
+                        flags = flags,
+                        time = 0,
+                        extraInfo = UIntPtr.Zero
+                    }
+                }
+            };
+        }
+    }
+}
+'@
+}
+
+function Find-VisibleWindow {
+    param(
+        [string]$TitlePattern,
+        [string]$ExactTitle
+    )
+
+    $matchingWindows = [System.Collections.Generic.List[object]]::new()
+    $callback = [QuickenReport.NativeMethods+EnumWindowsProc] {
+        param($hWnd, $lParam)
+        if ([QuickenReport.NativeMethods]::IsWindowVisible($hWnd)) {
+            $titleBuffer = [Text.StringBuilder]::new(512)
+            [void][QuickenReport.NativeMethods]::GetWindowText($hWnd, $titleBuffer, $titleBuffer.Capacity)
+            $title = $titleBuffer.ToString()
+            if ($title -like $TitlePattern) {
+                $matchingWindows.Add([PSCustomObject]@{ Handle = $hWnd; Title = $title })
+            }
+        }
+        return $true
+    }
+    [void][QuickenReport.NativeMethods]::EnumWindows($callback, [IntPtr]::Zero)
+
+    $window = $matchingWindows |
+        Sort-Object @{ Expression = { if ($_.Title -ieq $ExactTitle) { 0 } else { 1 } } } |
+        Select-Object -First 1
+    return $window
+}
+
+function Copy-MonthlyExpensesReport {
+    $window = Find-VisibleWindow -TitlePattern '*Monthly Expenses*' -ExactTitle 'Monthly Expenses'
+    if (-not $window) {
+        throw "Could not find a visible window with 'Monthly Expenses' in its title."
+    }
+    if (-not [QuickenReport.NativeMethods]::SetForegroundWindow($window.Handle)) {
+        throw "Could not activate the '$($window.Title)' window."
+    }
+
+    Start-Sleep -Milliseconds 150
+    $shell = New-Object -ComObject WScript.Shell
+    $shell.SendKeys('^c')
+    Start-Sleep -Milliseconds 300
+}
+
+function Open-AndCopy-MonthlyExpensesReport {
+    $quickenWindow = Find-VisibleWindow -TitlePattern '*Quicken Classic Deluxe*' -ExactTitle 'Quicken Classic Deluxe'
+    if (-not $quickenWindow) {
+        throw "Could not find a visible Quicken window."
+    }
+    if (-not [QuickenReport.NativeMethods]::SetForegroundWindow($quickenWindow.Handle)) {
+        throw "Could not activate the '$($quickenWindow.Title)' window."
+    }
+
+    Write-Host "Activating Quicken window '$($quickenWindow.Title)' and opening Monthly Expenses..." -ForegroundColor Cyan
+    $shell = New-Object -ComObject WScript.Shell
+    if (-not $shell.AppActivate($quickenWindow.Title)) {
+        throw "Could not bring the '$($quickenWindow.Title)' window to the foreground."
+    }
+    Start-Sleep -Milliseconds 300
+    $shell.SendKeys('%+e')
+    Start-Sleep -Milliseconds 1200
+
+    if (-not (Find-VisibleWindow -TitlePattern '*Monthly Expenses*' -ExactTitle 'Monthly Expenses')) {
+        Write-Host 'The report window did not appear; retrying with direct virtual-key input.' -ForegroundColor Yellow
+        [QuickenReport.NativeMethods]::SendAltShiftE()
+        Start-Sleep -Milliseconds 1200
+    }
+    Copy-MonthlyExpensesReport
+}
+
+if (-not $QuickenPath) {
+    Open-AndCopy-MonthlyExpensesReport
 }
 
 . (Join-Path $PSScriptRoot 'Parse-QuickenReport.ps1')
@@ -116,6 +286,7 @@ $dateRangePattern = '^\s*(\d{1,2}/\d{1,2}/\d{4})\s+through\s+(\d{1,2}/\d{1,2}/\d
 if ($data.DateRange -notmatch $dateRangePattern) {
     Write-Warning "Could not determine a single report month from the Quicken date range '$($data.DateRange)'. No spreadsheet updates were made."
     Stop-RunTranscript
+    Wait-DebugConsole
     return
 }
 
@@ -125,12 +296,14 @@ try {
 } catch {
     Write-Warning "Could not parse the Quicken date range '$($data.DateRange)'. No spreadsheet updates were made."
     Stop-RunTranscript
+    Wait-DebugConsole
     return
 }
 
 if ($startDate.Year -ne $endDate.Year -or $startDate.Month -ne $endDate.Month) {
     Write-Warning "The Quicken report spans more than one month ('$($data.DateRange)'). No spreadsheet updates were made."
     Stop-RunTranscript
+    Wait-DebugConsole
     return
 }
 
@@ -204,6 +377,7 @@ $candidates = foreach ($group in ($mappedEntries | Group-Object -Property Name))
 if (-not $candidates) {
     Write-Warning "No category/group entries found in the Quicken report."
     Stop-RunTranscript
+    Wait-DebugConsole
     return
 }
 
@@ -381,3 +555,4 @@ finally {
 }
 
 Stop-RunTranscript
+Wait-DebugConsole
