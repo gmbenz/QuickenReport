@@ -188,12 +188,17 @@ function Copy-MonthlyExpensesReport {
     if (-not $window) {
         throw "Could not find a visible window with 'Monthly Expenses' in its title."
     }
-    if (-not [QuickenReport.NativeMethods]::SetForegroundWindow($window.Handle)) {
+
+    $shell = New-Object -ComObject WScript.Shell
+    $activated = [QuickenReport.NativeMethods]::SetForegroundWindow($window.Handle)
+    if (-not $activated) {
+        $activated = $shell.AppActivate($window.Title)
+    }
+    if (-not $activated) {
         throw "Could not activate the '$($window.Title)' window."
     }
 
     Start-Sleep -Milliseconds 150
-    $shell = New-Object -ComObject WScript.Shell
     $shell.SendKeys('^c')
     Start-Sleep -Milliseconds 300
 }
@@ -214,13 +219,13 @@ function Open-AndCopy-MonthlyExpensesReport {
         throw "Could not bring the '$($quickenWindow.Title)' window to the foreground."
     }
     Start-Sleep -Milliseconds 300
-    $shell.SendKeys('%+e')
-    Start-Sleep -Milliseconds 1200
+    $shell.SendKeys('%+E')
+    Start-Sleep -Milliseconds 3000
 
     if (-not (Find-VisibleWindow -TitlePattern '*Monthly Expenses*' -ExactTitle 'Monthly Expenses')) {
         Write-Host 'The report window did not appear; retrying with direct virtual-key input.' -ForegroundColor Yellow
         [QuickenReport.NativeMethods]::SendAltShiftE()
-        Start-Sleep -Milliseconds 1200
+        Start-Sleep -Milliseconds 3000
     }
     Copy-MonthlyExpensesReport
 }
