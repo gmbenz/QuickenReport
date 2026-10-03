@@ -464,9 +464,9 @@ $rowsByName = @{}
             continue
         }
 
-        $matches = $rowsByName[$candidate.Name.Trim().ToLowerInvariant()]
+        $matchingRows = $rowsByName[$candidate.Name.Trim().ToLowerInvariant()]
 
-        if (-not $matches -and $candidate.Scope -eq 'Medical' -and $medicalBlankRows.Count -gt 0) {
+        if (-not $matchingRows -and $candidate.Scope -eq 'Medical' -and $medicalBlankRows.Count -gt 0) {
             $newRow = [int]$medicalBlankRows[0]
             $medicalBlankRows.RemoveAt(0)
             if (-not $DryRun) {
@@ -475,10 +475,10 @@ $rowsByName = @{}
             }
             $rowsByName[$candidate.Name.Trim().ToLowerInvariant()] = [System.Collections.Generic.List[int]]::new()
             $rowsByName[$candidate.Name.Trim().ToLowerInvariant()].Add($newRow)
-            $matches = $rowsByName[$candidate.Name.Trim().ToLowerInvariant()]
+            $matchingRows = $rowsByName[$candidate.Name.Trim().ToLowerInvariant()]
         }
 
-        if (-not $matches -and $candidate.Scope -eq 'Income' -and $incomeMiscBlankRows.Count -gt 0) {
+        if (-not $matchingRows -and $candidate.Scope -eq 'Income' -and $incomeMiscBlankRows.Count -gt 0) {
             $newRow = [int]$incomeMiscBlankRows[0]
             $incomeMiscBlankRows.RemoveAt(0)
             if (-not $DryRun) {
@@ -487,16 +487,16 @@ $rowsByName = @{}
             }
             $rowsByName[$candidate.Name.Trim().ToLowerInvariant()] = [System.Collections.Generic.List[int]]::new()
             $rowsByName[$candidate.Name.Trim().ToLowerInvariant()].Add($newRow)
-            $matches = $rowsByName[$candidate.Name.Trim().ToLowerInvariant()]
+            $matchingRows = $rowsByName[$candidate.Name.Trim().ToLowerInvariant()]
         }
 
-        if (-not $matches) {
+        if (-not $matchingRows) {
             Write-Warning "No spreadsheet match for Quicken category '$($candidate.Source)' (mapped to '$($candidate.Name)')."
             continue
         }
 
         # Writable = column C has a numeric value and no SUM-family formula (plain additive formulas are replaceable).
-        $writableRows = $matches | Where-Object {
+        $writableRows = $matchingRows | Where-Object {
             $f = $formulaArr[$_, 1]
             $value = $valueArr[$_, 1]
             -not ($f -is [string] -and $f -match '(?i)(^|[^A-Z0-9_])SUM[A-Z0-9_]*\s*\(') -and
@@ -505,7 +505,7 @@ $rowsByName = @{}
         }
 
         if ($writableRows.Count -eq 0) {
-            Write-Host "Skipping '$($candidate.Name)' from '$($candidate.Source)': matching row(s) $($matches -join ', ') are not writable numeric cells in column C." -ForegroundColor DarkGray
+            Write-Host "Skipping '$($candidate.Name)' from '$($candidate.Source)': matching row(s) $($matchingRows -join ', ') are not writable numeric cells in column C." -ForegroundColor DarkGray
             continue
         }
 
