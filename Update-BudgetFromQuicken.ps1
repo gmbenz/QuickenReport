@@ -90,65 +90,7 @@ namespace QuickenReport {
         public static extern bool SetForegroundWindow(IntPtr hWnd);
 
         [DllImport("user32.dll")]
-        private static extern uint SendInput(uint inputCount, INPUT[] inputs, int inputSize);
-
-        [DllImport("user32.dll")]
-        private static extern uint MapVirtualKey(uint code, uint mapType);
-
-        [StructLayout(LayoutKind.Sequential)]
-        private struct INPUT {
-            public uint type;
-            public INPUTUNION union;
-        }
-
-        [StructLayout(LayoutKind.Explicit)]
-        private struct INPUTUNION {
-            [FieldOffset(0)] public KEYBDINPUT keyboard;
-        }
-
-        [StructLayout(LayoutKind.Sequential)]
-        private struct KEYBDINPUT {
-            public ushort virtualKey;
-            public ushort scanCode;
-            public uint flags;
-            public uint time;
-            public UIntPtr extraInfo;
-        }
-
-        public static void SendAltShiftE() {
-            const uint scanCode = 0x0008;
-            const uint keyUp = 0x0002;
-            ushort altScanCode = (ushort)MapVirtualKey(0x12, 0);
-            ushort shiftScanCode = (ushort)MapVirtualKey(0x10, 0);
-            ushort eScanCode = (ushort)MapVirtualKey(0x45, 0);
-            INPUT[] inputs = new INPUT[] {
-                Key(0x12, altScanCode, scanCode),
-                Key(0x10, shiftScanCode, scanCode),
-                Key(0x45, eScanCode, scanCode),
-                Key(0x45, eScanCode, scanCode | keyUp),
-                Key(0x10, shiftScanCode, scanCode | keyUp),
-                Key(0x12, altScanCode, scanCode | keyUp)
-            };
-            for (int index = 0; index < inputs.Length; index++) {
-                SendInput(1, new INPUT[] { inputs[index] }, Marshal.SizeOf(typeof(INPUT)));
-                System.Threading.Thread.Sleep(index == 2 ? 150 : 50);
-            }
-        }
-
-        private static INPUT Key(ushort virtualKey, ushort scanCode, uint flags) {
-            return new INPUT {
-                type = 1,
-                union = new INPUTUNION {
-                    keyboard = new KEYBDINPUT {
-                        virtualKey = virtualKey,
-                        scanCode = scanCode,
-                        flags = flags,
-                        time = 0,
-                        extraInfo = UIntPtr.Zero
-                    }
-                }
-            };
-        }
+        public static extern IntPtr GetForegroundWindow();
     }
 }
 '@
@@ -203,6 +145,32 @@ function Copy-MonthlyExpensesReport {
     Start-Sleep -Milliseconds 300
 }
 
+function Wait-ForMonthlyExpensesWindow {
+    param([int]$TimeoutMs = 10000)
+
+    $deadline = (Get-Date).AddMilliseconds($TimeoutMs)
+    while ((Get-Date) -lt $deadline) {
+        $window = Find-VisibleWindow -TitlePattern '*Monthly Expenses*' -ExactTitle 'Monthly Expenses'
+        if ($window) { return $window }
+        Start-Sleep -Milliseconds 250
+    }
+    return $null
+}
+
+function Wait-ForForegroundWindow {
+    param(
+        [IntPtr]$Handle,
+        [int]$TimeoutMs = 3000
+    )
+
+    $deadline = (Get-Date).AddMilliseconds($TimeoutMs)
+    while ((Get-Date) -lt $deadline) {
+        if ([QuickenReport.NativeMethods]::GetForegroundWindow() -eq $Handle) { return $true }
+        Start-Sleep -Milliseconds 100
+    }
+    return $false
+}
+
 function Open-AndCopy-MonthlyExpensesReport {
     # Open the report from the real Quicken window, then copy its grid to the clipboard.
     $quickenWindow = Find-VisibleWindow -TitlePattern '*Quicken Classic Deluxe*' -ExactTitle 'Quicken Classic Deluxe'
@@ -218,14 +186,22 @@ function Open-AndCopy-MonthlyExpensesReport {
     if (-not $shell.AppActivate($quickenWindow.Title)) {
         throw "Could not bring the '$($quickenWindow.Title)' window to the foreground."
     }
-    Start-Sleep -Milliseconds 300
-    $shell.SendKeys('%+E')
-    Start-Sleep -Milliseconds 3000
+    if (-not (Wait-ForForegroundWindow -Handle $quickenWindow.Handle)) {
+        throw "The '$($quickenWindow.Title)' window never became the foreground window."
+    }
 
-    if (-not (Find-VisibleWindow -TitlePattern '*Monthly Expenses*' -ExactTitle 'Monthly Expenses')) {
-        Write-Host 'The report window did not appear; retrying with direct virtual-key input.' -ForegroundColor Yellow
-        [QuickenReport.NativeMethods]::SendAltShiftE()
-        Start-Sleep -Milliseconds 3000
+    $maxAttempts = 3
+    for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+        $shell.SendKeys('%+E')
+        if (Wait-ForMonthlyExpensesWindow) { break }
+
+        if ($attempt -lt $maxAttempts) {
+            Write-Host "The report window did not appear; resending the shortcut (attempt $($attempt + 1) of $maxAttempts)." -ForegroundColor Yellow
+            [void][QuickenReport.NativeMethods]::SetForegroundWindow($quickenWindow.Handle)
+            [void](Wait-ForForegroundWindow -Handle $quickenWindow.Handle -TimeoutMs 1500)
+        } else {
+            throw "The Monthly Expenses report window did not appear after $maxAttempts attempts."
+        }
     }
     Copy-MonthlyExpensesReport
 }
