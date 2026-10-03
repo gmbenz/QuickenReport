@@ -183,9 +183,7 @@ function Open-AndCopy-MonthlyExpensesReport {
 
     Write-Host "Activating Quicken window '$($quickenWindow.Title)' and opening Monthly Expenses..." -ForegroundColor Cyan
     $shell = New-Object -ComObject WScript.Shell
-    if (-not $shell.AppActivate($quickenWindow.Title)) {
-        throw "Could not bring the '$($quickenWindow.Title)' window to the foreground."
-    }
+    # AppActivate is flaky (fails on titles containing [ ] and on slow redraws); SetForegroundWindow above is authoritative, verified next.
     if (-not (Wait-ForForegroundWindow -Handle $quickenWindow.Handle)) {
         throw "The '$($quickenWindow.Title)' window never became the foreground window."
     }
