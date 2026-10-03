@@ -21,9 +21,6 @@
 .PARAMETER WorkbookPath
     Path to the budget workbook. Defaults to the standard xBudget 2026.xlsm location.
 
-.PARAMETER SheetName
-    Optional sheet name override. By default, the month is determined from the Quicken report date range.
-
 .PARAMETER DryRun
     Report what would change without writing or saving anything.
 
@@ -34,12 +31,11 @@
 param(
     [string]$QuickenPath,
     [string]$WorkbookPath = 'C:\Users\Glenn\My Drive\Finances\Budget\Budget 2026.xlsm',
-    [string]$SheetName,
     [switch]$DryRun,
     [switch]$DebugMode
 )
 
-# Keep a transcript because the shortcut may launch this script without a visible console.
+# Transcript logging so the UI automation is diagnosable when launched without a visible console.
 $logDirectory = Join-Path $PSScriptRoot 'logs'
 New-Item -Path $logDirectory -ItemType Directory -Force | Out-Null
 $logPath = Join-Path $logDirectory ((Get-Date).ToString('yyyyMMddHHmmss') + '.log')
@@ -60,13 +56,14 @@ function Wait-DebugConsole {
     }
 }
 
+# trap guarantees the transcript closes and the console stays open on error when DebugMode is used.
 trap {
     Stop-RunTranscript
     Wait-DebugConsole
     break
 }
 
-# Define the small set of Windows APIs needed to find, activate, and send keys to windows.
+# Minimal Win32 interop: enumerate windows, read titles, and check/request foreground focus.
 if (-not ('QuickenReport.NativeMethods' -as [type])) {
     Add-Type @'
 using System;
@@ -97,6 +94,7 @@ namespace QuickenReport {
 }
 
 function Find-VisibleWindow {
+    # Find the best-matching visible top-level window by title; exact matches are preferred over wildcard hits.
     param(
         [string]$TitlePattern,
         [string]$ExactTitle
@@ -132,20 +130,17 @@ function Copy-MonthlyExpensesReport {
     }
 
     $shell = New-Object -ComObject WScript.Shell
-    $activated = [QuickenReport.NativeMethods]::SetForegroundWindow($window.Handle)
-    if (-not $activated) {
-        $activated = $shell.AppActivate($window.Title)
-    }
-    if (-not $activated) {
+    [void][QuickenReport.NativeMethods]::SetForegroundWindow($window.Handle)
+    if (-not (Wait-ForForegroundWindow -Handle $window.Handle)) {
         throw "Could not activate the '$($window.Title)' window."
     }
 
-    Start-Sleep -Milliseconds 150
     $shell.SendKeys('^c')
     Start-Sleep -Milliseconds 300
 }
 
 function Wait-ForMonthlyExpensesWindow {
+    # Poll until the report window exists; replaces fixed sleeps so the script is as fast as Quicken allows.
     param([int]$TimeoutMs = 10000)
 
     $deadline = (Get-Date).AddMilliseconds($TimeoutMs)
@@ -158,6 +153,7 @@ function Wait-ForMonthlyExpensesWindow {
 }
 
 function Wait-ForForegroundWindow {
+    # Verify focus landed on the expected window; SetForegroundWindow can succeed without focus actually moving.
     param(
         [IntPtr]$Handle,
         [int]$TimeoutMs = 3000
@@ -172,7 +168,7 @@ function Wait-ForForegroundWindow {
 }
 
 function Open-AndCopy-MonthlyExpensesReport {
-    # Open the report from the real Quicken window, then copy its grid to the clipboard.
+    # Drive Quicken: focus the main window, send Alt+Shift+E, retry until the report window appears, then copy the grid.
     $quickenWindow = Find-VisibleWindow -TitlePattern '*Quicken Classic Deluxe*' -ExactTitle 'Quicken Classic Deluxe'
     if (-not $quickenWindow) {
         throw "Could not find a visible Quicken window."
@@ -205,14 +201,16 @@ function Open-AndCopy-MonthlyExpensesReport {
 }
 
 if (-not $QuickenPath) {
-    # File-based runs are deterministic and do not need to drive the Quicken UI.
+    # Clipboard path: drive the Quicken UI; a file path skips automation entirely for repeatable runs/tests.
     Open-AndCopy-MonthlyExpensesReport
 }
 
 # Load the shared parser after clipboard acquisition so the UI automation remains isolated here.
 . (Join-Path $PSScriptRoot 'Parse-QuickenReport.ps1')
 
-# Quicken category name -> spreadsheet category name.
+# These tables translate Quicken names to spreadsheet names. Keys are lowercase; matching is case-insensitive.
+# categoryMap: top-level categories. utilitiesChildMap/entertainmentChildMap: sub-rows inside SUM-formula sections.
+# vendorMap: payee aliases (e.g. 'State Farm' and 'State Farm Insurance' are one vendor).
 $categoryMap = @{
     'charitable gifts'       = 'Charitable Gifts'
     'classroom'              = 'Classroom'
@@ -266,9 +264,10 @@ $vendorMap = @{
 }
 $protectedSpreadsheetNames = @('Savings')
 
-# Acquire structured report data from the copied report or the optional input file.
+# Parse the report (clipboard unless -QuickenPath was given) into structured entries.
 $data = Get-QuickenReportData -Path $QuickenPath
 
+# The report's date range selects the target month sheet; multi-month or unparseable ranges abort without changes.
 $dateRangePattern = '^\s*(\d{1,2}/\d{1,2}/\d{4})\s+through\s+(\d{1,2}/\d{1,2}/\d{4})\s*$'
 if ($data.DateRange -notmatch $dateRangePattern) {
     Write-Warning "Could not determine a single report month from the Quicken date range '$($data.DateRange)'. No spreadsheet updates were made."
@@ -297,7 +296,7 @@ if ($startDate.Year -ne $endDate.Year -or $startDate.Month -ne $endDate.Month) {
 # The report month determines the target worksheet unless an explicit override is supplied.
 $SheetName = $startDate.ToString('MMMM')
 
-# Map Quicken groups/categories/vendors to the names used by the budget workbook.
+# Translate Quicken entries into spreadsheet candidates using the maps above, tracking which section each entry came from.
 $currentSection = $null
 $mappedEntries = foreach ($entry in $data.Entries | Where-Object {
         $_.Type -in 'Group', 'Category' -or
@@ -346,7 +345,7 @@ $mappedEntries = foreach ($entry in $data.Entries | Where-Object {
     $spreadsheetName = $null
     $scope = $null
 }
-# Combine duplicate mapped entries into one spreadsheet candidate, preserving a formula when useful.
+# Merge duplicates of the same target into one candidate; a multi-source candidate becomes a formula like =(a)+(b).
 $candidates = foreach ($group in ($mappedEntries | Group-Object -Property Name)) {
     $amount = ($group.Group | Measure-Object -Property Amount -Sum).Sum
     $formula = if ($group.Count -gt 1) {
@@ -426,8 +425,9 @@ try {
     $valueArr = $sheet.Range($sheet.Cells.Item(1, 3), $sheet.Cells.Item($lastRow, 3)).Value2
     $flagsArr = $sheet.Range($sheet.Cells.Item(1, 8), $sheet.Cells.Item($lastRow, 8)).Value2
 
-    # Index eligible worksheet rows, including reserved blank slots for special child categories.
-    $rowsByName = @{}
+# Index rows by name. Rows flagged X in column H are child rows and only indexed when mapped or in a special block
+# (Medical/Income Misc); blank X rows in those blocks are remembered as slots for new payees.
+$rowsByName = @{}
     $medicalBlankRows = [System.Collections.Generic.List[int]]::new()
     $incomeMiscBlankRows = [System.Collections.Generic.List[int]]::new()
     $medicalParentRow = $null
@@ -456,7 +456,7 @@ try {
         }
     }
 
-    # Resolve each Quicken candidate to exactly one writable budget row before changing Excel.
+    # For each candidate: resolve to one writable row, allocate a blank slot if new, skip protected/ambiguous/formula rows.
     $updated = 0
     foreach ($candidate in $candidates) {
         if ($protectedSpreadsheetNames -contains $candidate.Name) {
@@ -495,7 +495,7 @@ try {
             continue
         }
 
-        # SUM-family formulas remain authoritative; additive formulas can be replaced by Quicken values.
+        # Writable = column C has a numeric value and no SUM-family formula (plain additive formulas are replaceable).
         $writableRows = $matches | Where-Object {
             $f = $formulaArr[$_, 1]
             $value = $valueArr[$_, 1]
@@ -539,7 +539,7 @@ try {
     }
 }
 finally {
-    # Release COM ownership and close Excel only when this script started it.
+    # Only quit Excel when this script started it; never close a workbook the user already had open.
     if ($excel) {
         if ($openedWorkbook -and $workbook -and -not $DryRun) {
             # workbook was opened by this script and already saved above; leave it open for review

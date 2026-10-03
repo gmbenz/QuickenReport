@@ -37,6 +37,7 @@ function Get-QuickenReportData {
 
     $lines = $raw -split "`r?`n"
 
+    # A date in column 1 distinguishes a transaction row from a group/category row.
     $dateRegex = '^\d{1,2}/\d{1,2}/\d{4}$'
 
     $title = $null
@@ -44,19 +45,21 @@ function Get-QuickenReportData {
     $overallTotal = $null
     $sawHeaderRow = $false
     $entries = [System.Collections.Generic.List[object]]::new()
+    # Track the enclosing category and top-level section so transactions inherit context.
     $currentCategory = $null
     $currentGroup = $null
+    # Expenses/transfers are reported as money leaving an account; the budget sheet wants them positive.
     $negatedGroups = 'EXPENSES', 'TRANSFERS'
     $reportGroups = 'INCOME', 'EXPENSES', 'TRANSFERS'
 
+    # Column indexes come from the header row so column order changes don't break the parse.
     $dateIndex = $null
     $accountIndex = $null
     $descriptionIndex = $null
     $memoIndex = $null
     $amountIndex = $null
 
-    # Capture the report metadata before locating the tab-delimited header row.
-    # Parse the rows after the header, preserving Quicken's group/category/transaction order.
+    # Capture the report metadata (title, then date range) from the untabbed lines above the grid.
     foreach ($line in $lines) {
         if ($line -match "`t") { break }
         if ([string]::IsNullOrWhiteSpace($line)) { continue }
@@ -64,6 +67,7 @@ function Get-QuickenReportData {
         elseif (-not $dateRange) { $dateRange = $line.Trim() }
     }
 
+    # Walk the grid rows in order; context (current group/category) is set by subtotal rows as they pass.
     foreach ($line in $lines) {
         if ([string]::IsNullOrWhiteSpace($line)) { continue }
 
@@ -96,7 +100,7 @@ function Get-QuickenReportData {
         $amount = [double]::Parse(($amountText -replace ',', ''), [System.Globalization.CultureInfo]::InvariantCulture)
 
         if ($col1 -match $dateRegex) {
-            # Transaction rows inherit the current group and category context.
+            # Transaction row: belongs to the most recent category and section. **VOID** placeholders are skipped by default.
             if (-not $ShowVoids -and $col3 -eq '**VOID**' -and $amount -eq 0) { continue }
 
             if ($currentGroup -in $negatedGroups) { $amount = -$amount }
@@ -115,12 +119,14 @@ function Get-QuickenReportData {
             $overallTotal = $amount
         }
         else {
-            # Group/category rows establish context and provide subtotal entries.
+            # Subtotal row: all-caps names within the known sections are groups; anything else is a category.
+            # Quicken flattens hierarchy, so an uppercase name like HOA is a category, not a new group — only
+            # INCOME/EXPENSES/TRANSFERS are allowed to change the section context.
             $isGroup = ($col1 -ceq $col1.ToUpperInvariant())
             if ($isGroup -and $col1 -in $reportGroups) { $currentGroup = $col1 }
             $currentCategory = $col1
 
-            # Quicken reports expenses/transfers as money leaving accounts; negate so they match the budget sheet's positive "spent" convention.
+            # Negate in the same cases as transactions so subtotals match the budget convention.
             if ($currentGroup -in $negatedGroups) { $amount = -$amount }
             $entries.Add([PSCustomObject]@{
                 Type           = if ($isGroup) { 'Group' } else { 'Category' }
