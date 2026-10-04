@@ -37,6 +37,73 @@ param(
     [switch]$DebugMode
 )
 
+# ===== Mapping data: adjust these as needed =====
+# These tables translate Quicken names to spreadsheet names. Keys are lowercase; matching is case-insensitive.
+# categoryMap: top-level categories. utilitiesChildMap/entertainmentChildMap: sub-rows inside SUM-formula sections.
+# vendorMap: payee aliases (e.g. 'State Farm' and 'State Farm Insurance' are one vendor).
+$categoryMap = @{
+    'charitable gifts'       = 'Charitable Gifts'
+    'classroom'              = 'Classroom'
+    'clothing'               = 'Clothing'
+    'food-groceries'         = 'Grocery'
+    'food-restaurants'       = 'Restaurants'
+    'housing-maintenance'    = 'Housing'
+    'insurance'              = 'Insurance'
+    'medical'                = 'Medical'
+    'personal-gifts'         = 'Gifts'
+    'personal-hair care'     = 'Hair Care'
+    'personal-miscellaneous' = 'Miscellaneous'
+    'personal-pets'          = 'Pets'
+    'recreation-vacation'    = 'Vacation'
+    'transportation-gas'     = 'Gas'
+    'transportation-insurance' = 'Car Insurance'
+    'transportation-repairs' = 'Car Repairs'
+    'utilities'              = 'Utilities'
+    'utilities-entertainment' = 'Entertainment'
+    'hsabank'                = 'HSA/Reimburse'
+    'savings'                = 'Savings'
+    "kohl's"                = 'Debt Misc'
+    "american express"         = 'Debt Misc'
+    "discover"                = 'Debt Misc'
+    "united airlines"          = 'Debt Misc'
+    'carecredit'             = 'Debt CareCredit'
+    "jessica's student loan" = 'Student Loan'
+    'rocket mortgage escrow' = 'Home Mortgage'
+    'rocket mortgage interest' = 'Home Mortgage'
+    'rocket mortgage'        = 'Home Mortgage'
+    'schwab joint tenant'    = 'Retirement'
+    'schwab roth contributory ira' = 'Retirement'
+}
+$utilitiesChildMap = @{
+    'cable'       = 'Internet'
+    'cellular'    = 'Cellular'
+    'electricity' = 'Electric'
+    'hoa'         = 'HOA'
+    'storm water' = 'Storm Water'
+    'trash'       = 'Trash'
+    'water'       = 'Water/Sewer'
+}
+$entertainmentChildMap = @{
+    'netflix'    = 'Netflix'
+    'google pay' = 'Paramount+'
+    'paypal'     = 'Hulu'
+}
+$vendorMap = @{
+    'state farm'           = 'State Farm'
+    'state farm insurance' = 'State Farm'
+}
+$protectedSpreadsheetNames = @('Savings')
+
+# Spreadsheet account name (found by searching column I) -> Quicken account name.
+$balanceAccountMap = [ordered]@{
+    'Checking' = 'Checking'
+    'Wallet'   = 'Wallet'
+    'Received' = 'Received Income'
+    'bp'       = 'bp Rewards'
+    'Amazon'   = 'Amazon Prime Rewards'
+}
+# ===== End of mapping data =====
+
 # Transcript logging so the UI automation is diagnosable when launched without a visible console.
 $logDirectory = Join-Path $PSScriptRoot 'logs'
 New-Item -Path $logDirectory -ItemType Directory -Force | Out-Null
@@ -276,61 +343,6 @@ if (-not $QuickenPath) {
 # Load the shared parser after clipboard acquisition so the UI automation remains isolated here.
 . (Join-Path $PSScriptRoot 'Parse-QuickenReport.ps1')
 
-# These tables translate Quicken names to spreadsheet names. Keys are lowercase; matching is case-insensitive.
-# categoryMap: top-level categories. utilitiesChildMap/entertainmentChildMap: sub-rows inside SUM-formula sections.
-# vendorMap: payee aliases (e.g. 'State Farm' and 'State Farm Insurance' are one vendor).
-$categoryMap = @{
-    'charitable gifts'       = 'Charitable Gifts'
-    'classroom'              = 'Classroom'
-    'clothing'               = 'Clothing'
-    'food-groceries'         = 'Grocery'
-    'food-restaurants'       = 'Restaurants'
-    'housing-maintenance'    = 'Housing'
-    'insurance'              = 'Insurance'
-    'medical'                = 'Medical'
-    'personal-gifts'         = 'Gifts'
-    'personal-hair care'     = 'Hair Care'
-    'personal-miscellaneous' = 'Miscellaneous'
-    'personal-pets'          = 'Pets'
-    'recreation-vacation'    = 'Vacation'
-    'transportation-gas'     = 'Gas'
-    'transportation-insurance' = 'Car Insurance'
-    'transportation-repairs' = 'Car Repairs'
-    'utilities'              = 'Utilities'
-    'utilities-entertainment' = 'Entertainment'
-    'hsabank'                = 'HSA/Reimburse'
-    'savings'                = 'Savings'
-    "kohl's"                = 'Debt Misc'
-    "american express"         = 'Debt Misc'
-    "discover"                = 'Debt Misc'
-    "united airlines"          = 'Debt Misc'
-    'carecredit'             = 'Debt CareCredit'
-    "jessica's student loan" = 'Student Loan'
-    'rocket mortgage escrow' = 'Home Mortgage'
-    'rocket mortgage interest' = 'Home Mortgage'
-    'rocket mortgage'        = 'Home Mortgage'
-    'schwab joint tenant'    = 'Retirement'
-    'schwab roth contributory ira' = 'Retirement'
-}
-$utilitiesChildMap = @{
-    'cable'       = 'Internet'
-    'cellular'    = 'Cellular'
-    'electricity' = 'Electric'
-    'hoa'         = 'HOA'
-    'storm water' = 'Storm Water'
-    'trash'       = 'Trash'
-    'water'       = 'Water/Sewer'
-}
-$entertainmentChildMap = @{
-    'netflix'    = 'Netflix'
-    'google pay' = 'Paramount+'
-    'paypal'     = 'Hulu'
-}
-$vendorMap = @{
-    'state farm'           = 'State Farm'
-    'state farm insurance' = 'State Farm'
-}
-$protectedSpreadsheetNames = @('Savings')
 
 # Parse the report (clipboard unless -QuickenPath was given) into structured entries.
 $data = Get-QuickenReportData -Path $QuickenPath
@@ -340,14 +352,6 @@ $accountBalances = $null
 if (-not $SkipBalances -and ($BalancesPath -or -not $QuickenPath)) {
     if (-not $BalancesPath) { Open-AndCopy-AccountBalancesReport }
     $accountBalances = Get-QuickenBalanceData -Path $BalancesPath
-}
-# Spreadsheet account name (column I, rows 37-42) -> Quicken account name.
-$balanceAccountMap = [ordered]@{
-    'Checking' = 'Checking'
-    'Wallet'   = 'Wallet'
-    'Received' = 'Received Income'
-    'bp'       = 'bp Rewards'
-    'Amazon'   = 'Amazon Prime Rewards'
 }
 
 # The report's date range selects the target month sheet; multi-month or unparseable ranges abort without changes.
@@ -614,17 +618,35 @@ $rowsByName = @{}
         $updated++
     }
 
-    # Copy current Quicken balances into the account table (name in column I, balance in column J, rows 37-42).
+    # Locate each account by name in column I (rows can move), then write its balance to column J on that row.
     if ($accountBalances) {
         Write-Host ''
-        for ($row = 37; $row -le 42; $row++) {
-            $sheetName = [string]$sheet.Cells.Item($row, 9).Value2
-            if (-not $sheetName -or -not $balanceAccountMap.Contains($sheetName.Trim())) { continue }
-            $quickenName = $balanceAccountMap[$sheetName.Trim()]
+        $labelArr = $sheet.Range($sheet.Cells.Item(1, 9), $sheet.Cells.Item($lastRow, 9)).Value2
+        $labelRows = @{}
+        for ($row = 1; $row -le $lastRow; $row++) {
+            $label = $labelArr[$row, 1]
+            if ($label -isnot [string] -or -not $label.Trim()) { continue }
+            $key = $label.Trim().ToLowerInvariant()
+            if (-not $labelRows.ContainsKey($key)) { $labelRows[$key] = [System.Collections.Generic.List[int]]::new() }
+            $labelRows[$key].Add($row)
+        }
+
+        foreach ($sheetName in $balanceAccountMap.Keys) {
+            $quickenName = $balanceAccountMap[$sheetName]
+            $rows = $labelRows[$sheetName.ToLowerInvariant()]
+            if (-not $rows) {
+                Write-Host "Skipping '$sheetName': not found in column I of '$SheetName'."
+                continue
+            }
+            if ($rows.Count -gt 1) {
+                Write-Warning "Account '$sheetName' appears in column I rows $($rows -join ', '); its balance was not updated."
+                continue
+            }
             if (-not $accountBalances.ContainsKey($quickenName)) {
                 Write-Warning "Quicken account '$quickenName' (spreadsheet '$sheetName') is not in the Account Balances report."
                 continue
             }
+            $row = $rows[0]
             $oldBalance = $sheet.Cells.Item($row, 10).Value2
             Write-Host ("{0,-24} <- {1,-28} row {2,-4} J: {3,10} -> {4,10}" -f $sheetName, $quickenName, $row, $oldBalance, $accountBalances[$quickenName]) -ForegroundColor Green
             if (-not $DryRun) { $sheet.Cells.Item($row, 10).Value2 = $accountBalances[$quickenName] }
@@ -654,6 +676,7 @@ finally {
 
 Stop-RunTranscript
 Wait-DebugConsole
+
 
 
 
