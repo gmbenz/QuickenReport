@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Updates column C (Spent/Received) of the current month's sheet in the budget
     workbook using amounts parsed from a Quicken report.
@@ -30,6 +30,8 @@
 [CmdletBinding()]
 param(
     [string]$QuickenPath,
+    [string]$BalancesPath,
+    [switch]$SkipBalances,
     [string]$WorkbookPath = 'C:\Users\Glenn\My Drive\Finances\Budget\Budget 2026.xlsm',
     [switch]$DryRun,
     [switch]$DebugMode
@@ -93,6 +95,31 @@ namespace QuickenReport {
 '@
 }
 
+if (-not ('QuickenReport.Mouse' -as [type])) {
+    Add-Type @'
+using System;
+using System.Runtime.InteropServices;
+namespace QuickenReport {
+    public static class Mouse {
+        [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left, Top, Right, Bottom; }
+        [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
+        [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
+        [DllImport("user32.dll")] public static extern void mouse_event(uint flags, uint dx, uint dy, uint data, UIntPtr extra);
+    }
+}
+'@
+}
+
+function Click-WindowBody {
+    # Click the middle of a window so its content (not its frame) holds keyboard focus.
+    param([IntPtr]$Handle)
+    $rect = New-Object QuickenReport.Mouse+RECT
+    if (-not [QuickenReport.Mouse]::GetWindowRect($Handle, [ref]$rect)) { return }
+    [void][QuickenReport.Mouse]::SetCursorPos([int](($rect.Left + $rect.Right) / 2), [int](($rect.Top + $rect.Bottom) / 2))
+    [QuickenReport.Mouse]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
+    [QuickenReport.Mouse]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
+    Start-Sleep -Milliseconds 200
+}
 function Find-VisibleWindow {
     # Find the best-matching visible top-level window by title; exact matches are preferred over wildcard hits.
     param(
@@ -200,6 +227,47 @@ function Open-AndCopy-MonthlyExpensesReport {
     Copy-MonthlyExpensesReport
 }
 
+function Open-AndCopy-AccountBalancesReport {
+    # Same approach as the expenses report: focus Quicken, send Alt+Shift+B, wait for the window, copy its grid.
+    $quickenWindow = Find-VisibleWindow -TitlePattern '*Quicken Classic Deluxe*' -ExactTitle 'Quicken Classic Deluxe'
+    if (-not $quickenWindow) { throw "Could not find a visible Quicken window." }
+    [void][QuickenReport.NativeMethods]::SetForegroundWindow($quickenWindow.Handle)
+    if (-not (Wait-ForForegroundWindow -Handle $quickenWindow.Handle)) {
+        throw "The '$($quickenWindow.Title)' window never became the foreground window."
+    }
+
+    Write-Host 'Opening Account Balances...' -ForegroundColor Cyan
+    $shell = New-Object -ComObject WScript.Shell
+    $window = $null
+    for ($attempt = 1; $attempt -le 3 -and -not $window; $attempt++) {
+        $shell.SendKeys('%+B')
+        $deadline = (Get-Date).AddMilliseconds(10000)
+        while (-not $window -and (Get-Date) -lt $deadline) {
+            $window = Find-VisibleWindow -TitlePattern 'Account Balances*' -ExactTitle 'Account Balances'
+            if (-not $window) { Start-Sleep -Milliseconds 250 }
+        }
+        if (-not $window -and $attempt -lt 3) {
+            [void][QuickenReport.NativeMethods]::SetForegroundWindow($quickenWindow.Handle)
+            [void](Wait-ForForegroundWindow -Handle $quickenWindow.Handle -TimeoutMs 1500)
+        }
+    }
+    if (-not $window) { throw "The Account Balances report window did not appear." }
+
+    # Copy can land in the wrong window if focus is slow, so clear the clipboard, copy, and verify the report text arrived.
+    # Clicking inside the report grid gives it keyboard focus, which Ctrl+C needs.
+    $copied = $false
+    for ($attempt = 1; $attempt -le 4 -and -not $copied; $attempt++) {
+        Set-Clipboard -Value 'pending'
+        [void][QuickenReport.NativeMethods]::SetForegroundWindow($window.Handle)
+        Start-Sleep -Milliseconds (500 * $attempt)
+        if ($attempt -ge 1) { Click-WindowBody -Handle $window.Handle }
+        $shell.SendKeys('^c')
+        Start-Sleep -Milliseconds 500
+        $copied = (Get-Clipboard -Raw) -match '^\s*Account Balances'
+        if (-not $copied) { Write-Host "Account Balances copy attempt $attempt did not capture the report." -ForegroundColor Yellow }
+    }
+    if (-not $copied) { throw "Could not copy the Account Balances report from Quicken." }
+}
 if (-not $QuickenPath) {
     # Clipboard path: drive the Quicken UI; a file path skips automation entirely for repeatable runs/tests.
     Open-AndCopy-MonthlyExpensesReport
@@ -266,6 +334,21 @@ $protectedSpreadsheetNames = @('Savings')
 
 # Parse the report (clipboard unless -QuickenPath was given) into structured entries.
 $data = Get-QuickenReportData -Path $QuickenPath
+
+# Balances use the clipboard too, so capture and parse them right after the expenses report has been consumed.
+$accountBalances = $null
+if (-not $SkipBalances -and ($BalancesPath -or -not $QuickenPath)) {
+    if (-not $BalancesPath) { Open-AndCopy-AccountBalancesReport }
+    $accountBalances = Get-QuickenBalanceData -Path $BalancesPath
+}
+# Spreadsheet account name (column I, rows 37-42) -> Quicken account name.
+$balanceAccountMap = [ordered]@{
+    'Checking' = 'Checking'
+    'Wallet'   = 'Wallet'
+    'Received' = 'Received Income'
+    'bp'       = 'bp Rewards'
+    'Amazon'   = 'Amazon Prime Rewards'
+}
 
 # The report's date range selects the target month sheet; multi-month or unparseable ranges abort without changes.
 $dateRangePattern = '^\s*(\d{1,2}/\d{1,2}/\d{4})\s+through\s+(\d{1,2}/\d{1,2}/\d{4})\s*$'
@@ -531,6 +614,24 @@ $rowsByName = @{}
         $updated++
     }
 
+    # Copy current Quicken balances into the account table (name in column I, balance in column J, rows 37-42).
+    if ($accountBalances) {
+        Write-Host ''
+        for ($row = 37; $row -le 42; $row++) {
+            $sheetName = [string]$sheet.Cells.Item($row, 9).Value2
+            if (-not $sheetName -or -not $balanceAccountMap.Contains($sheetName.Trim())) { continue }
+            $quickenName = $balanceAccountMap[$sheetName.Trim()]
+            if (-not $accountBalances.ContainsKey($quickenName)) {
+                Write-Warning "Quicken account '$quickenName' (spreadsheet '$sheetName') is not in the Account Balances report."
+                continue
+            }
+            $oldBalance = $sheet.Cells.Item($row, 10).Value2
+            Write-Host ("{0,-24} <- {1,-28} row {2,-4} J: {3,10} -> {4,10}" -f $sheetName, $quickenName, $row, $oldBalance, $accountBalances[$quickenName]) -ForegroundColor Green
+            if (-not $DryRun) { $sheet.Cells.Item($row, 10).Value2 = $accountBalances[$quickenName] }
+            $updated++
+        }
+    }
+
     if ($DryRun) {
         Write-Host "`nDry run: $updated cell(s) would be updated. No changes saved." -ForegroundColor Yellow
     } else {
@@ -553,3 +654,8 @@ finally {
 
 Stop-RunTranscript
 Wait-DebugConsole
+
+
+
+
+

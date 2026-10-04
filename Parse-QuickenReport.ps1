@@ -144,3 +144,32 @@ function Get-QuickenReportData {
         Entries      = $entries
     }
 }
+
+function Get-QuickenBalanceData {
+    # Parses the tab-delimited Account Balances report into an account-name -> balance hashtable.
+    [CmdletBinding()]
+    param([string]$Path)
+
+    if ($Path) {
+        if (-not (Test-Path $Path)) { throw "File not found: $Path" }
+        $raw = Get-Content -Path $Path -Raw
+    } else {
+        $raw = Get-Clipboard -Raw
+    }
+    if ([string]::IsNullOrWhiteSpace($raw)) { throw "No Account Balances report text found." }
+
+    $balances = @{}
+    foreach ($line in ($raw -split "`r?`n")) {
+        $cols = $line -split "`t"
+        # Account rows are "<blank>, name, balance"; section headers and the column header have no numeric balance.
+        $nonEmpty = @($cols | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+        if ($nonEmpty.Count -ne 2) { continue }
+        $name = $nonEmpty[0]
+        if ($name -cmatch '^(TOTAL |OVERALL TOTAL)') { continue }
+        $value = 0.0
+        if ([double]::TryParse(($nonEmpty[1] -replace ',', ''), [System.Globalization.NumberStyles]::Float, [System.Globalization.CultureInfo]::InvariantCulture, [ref]$value)) {
+            $balances[$name] = $value
+        }
+    }
+    $balances
+}
