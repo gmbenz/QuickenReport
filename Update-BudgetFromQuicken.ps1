@@ -175,7 +175,7 @@ namespace QuickenReport {
 '@
 }
 
-function Click-WindowBody {
+function Invoke-WindowBodyClick {
     # Click the middle of a window so its content (not its frame) holds keyboard focus.
     param([IntPtr]$Handle)
     $rect = New-Object QuickenReport.Mouse+RECT
@@ -325,7 +325,7 @@ function Open-AndCopy-AccountBalancesReport {
         Set-Clipboard -Value 'pending'
         [void][QuickenReport.NativeMethods]::SetForegroundWindow($window.Handle)
         Start-Sleep -Milliseconds (500 * $attempt)
-        if ($attempt -ge 1) { Click-WindowBody -Handle $window.Handle }
+        if ($attempt -ge 1) { Invoke-WindowBodyClick -Handle $window.Handle }
         $shell.SendKeys('^c')
         Start-Sleep -Milliseconds 500
         $copied = (Get-Clipboard -Raw) -match '^\s*Account Balances'
