@@ -24,6 +24,10 @@
 .PARAMETER DryRun
     Report what would change without writing or saving anything.
 
+.PARAMETER PreviousMonth
+    Open the previous month's reports in Quicken (Alt+Shift+L for expenses, Alt+Shift+M
+    for account balances) instead of the current month's (Alt+Shift+E / Alt+Shift+B). The target sheet still follows the report's date range.
+
 .PARAMETER DebugMode
     Keep the PowerShell console open after the script finishes or encounters an error.
 #>
@@ -34,7 +38,8 @@ param(
     [switch]$SkipBalances,
     [string]$WorkbookPath = 'C:\Users\Glenn\My Drive\Finances\Budget\Budget 2026.xlsm',
     [switch]$DryRun,
-    [switch]$DebugMode
+    [switch]$DebugMode,
+    [switch]$PreviousMonth
 )
 
 # ===== Mapping data: adjust these as needed =====
@@ -214,11 +219,15 @@ function Find-VisibleWindow {
     return $window
 }
 
+# Quicken titles the previous-month report window "Last Month" rather than "Monthly Expenses".
+$reportWindowTitle = if ($PreviousMonth) { 'Last Month' } else { 'Monthly Expenses' }
+$balancesWindowTitle = if ($PreviousMonth) { 'Last Month Account Balances' } else { 'Account Balances' }
+
 function Copy-MonthlyExpensesReport {
     # The report window is separate from Quicken's main window, so locate it after the shortcut runs.
-    $window = Find-VisibleWindow -TitlePattern '*Monthly Expenses*' -ExactTitle 'Monthly Expenses'
+    $window = Find-VisibleWindow -TitlePattern "*$reportWindowTitle*" -ExactTitle $reportWindowTitle
     if (-not $window) {
-        throw "Could not find a visible window with 'Monthly Expenses' in its title."
+        throw "Could not find a visible window with '$reportWindowTitle' in its title."
     }
 
     $shell = New-Object -ComObject WScript.Shell
@@ -237,7 +246,7 @@ function Wait-ForMonthlyExpensesWindow {
 
     $deadline = (Get-Date).AddMilliseconds($TimeoutMs)
     while ((Get-Date) -lt $deadline) {
-        $window = Find-VisibleWindow -TitlePattern '*Monthly Expenses*' -ExactTitle 'Monthly Expenses'
+        $window = Find-VisibleWindow -TitlePattern "*$reportWindowTitle*" -ExactTitle $reportWindowTitle
         if ($window) { return $window }
         Start-Sleep -Milliseconds 250
     }
@@ -278,7 +287,7 @@ function Open-AndCopy-MonthlyExpensesReport {
 
     $maxAttempts = 3
     for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
-        $shell.SendKeys('%+E')
+        $shell.SendKeys($(if ($PreviousMonth) { '%+L' } else { '%+E' }))
         if (Wait-ForMonthlyExpensesWindow) { break }
 
         if ($attempt -lt $maxAttempts) {
@@ -286,7 +295,7 @@ function Open-AndCopy-MonthlyExpensesReport {
             [void][QuickenReport.NativeMethods]::SetForegroundWindow($quickenWindow.Handle)
             [void](Wait-ForForegroundWindow -Handle $quickenWindow.Handle -TimeoutMs 1500)
         } else {
-            throw "The Monthly Expenses report window did not appear after $maxAttempts attempts."
+            throw "The '$reportWindowTitle' report window did not appear after $maxAttempts attempts."
         }
     }
     Copy-MonthlyExpensesReport
@@ -305,10 +314,10 @@ function Open-AndCopy-AccountBalancesReport {
     $shell = New-Object -ComObject WScript.Shell
     $window = $null
     for ($attempt = 1; $attempt -le 3 -and -not $window; $attempt++) {
-        $shell.SendKeys('%+B')
+        $shell.SendKeys($(if ($PreviousMonth) { '%+M' } else { '%+B' }))
         $deadline = (Get-Date).AddMilliseconds(10000)
         while (-not $window -and (Get-Date) -lt $deadline) {
-            $window = Find-VisibleWindow -TitlePattern 'Account Balances*' -ExactTitle 'Account Balances'
+            $window = Find-VisibleWindow -TitlePattern "$balancesWindowTitle*" -ExactTitle $balancesWindowTitle
             if (-not $window) { Start-Sleep -Milliseconds 250 }
         }
         if (-not $window -and $attempt -lt 3) {
@@ -328,7 +337,7 @@ function Open-AndCopy-AccountBalancesReport {
         if ($attempt -ge 1) { Invoke-WindowBodyClick -Handle $window.Handle }
         $shell.SendKeys('^c')
         Start-Sleep -Milliseconds 500
-        $copied = (Get-Clipboard -Raw) -match '^\s*Account Balances'
+        $copied = (Get-Clipboard -Raw) -match '^\s*(Last Month\s+)?Account Balances'
         if (-not $copied) { Write-Host "Account Balances copy attempt $attempt did not capture the report." -ForegroundColor Yellow }
     }
     if (-not $copied) { throw "Could not copy the Account Balances report from Quicken." }
