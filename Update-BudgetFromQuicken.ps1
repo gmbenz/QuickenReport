@@ -36,7 +36,7 @@ param(
     [string]$QuickenPath,
     [string]$BalancesPath,
     [switch]$SkipBalances,
-    [string]$WorkbookPath = 'C:\Users\Glenn\My Drive\Finances\Budget\Budget 2026.xlsm',
+    [string]$WorkbookPath = 'G:\My Drive\Finances\Budget\Budget 2026.xlsm',
     [switch]$DryRun,
     [switch]$DebugMode,
     [switch]$PreviousMonth
