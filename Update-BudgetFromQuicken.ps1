@@ -36,11 +36,20 @@ param(
     [string]$QuickenPath,
     [string]$BalancesPath,
     [switch]$SkipBalances,
-    [string]$WorkbookPath = 'G:\My Drive\Finances\Budget\Budget 2026.xlsm',
+    [string]$WorkbookPath = '',
     [switch]$DryRun,
     [switch]$DebugMode,
     [switch]$PreviousMonth
 )
+
+# Calculate the year for the workbook, accounting for PreviousMonth in January
+$year = (Get-Date).Year
+if ($PreviousMonth -and (Get-Date).Month -eq 1) {
+    $year--
+}
+if (-not $WorkbookPath) {
+    $WorkbookPath = "G:\My Drive\Finances\Budget\Budget $year.xlsm"
+}
 
 # ===== Mapping data: adjust these as needed =====
 # These tables translate Quicken names to spreadsheet names. Keys are lowercase; matching is case-insensitive.
